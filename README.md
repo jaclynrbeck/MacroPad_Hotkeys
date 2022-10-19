@@ -28,7 +28,8 @@ Another example, using mouse commands:
 This will repeatedly move the mouse cursor right by 10 px, as long as the key
 is held down for longer than 0.5 seconds. A quick press and release will move
 the mouse once. 
- 
+
 <br />
+
 This code was built using [CircuitPython 7.3.3 for the MacroPad RP2040](https://circuitpython.org/board/adafruit_macropad_rp2040/).
 
