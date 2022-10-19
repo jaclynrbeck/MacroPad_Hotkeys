@@ -102,6 +102,12 @@ last_encoder_switch = macropad.encoder_switch_debounced.pressed
 app_index = 0
 apps[app_index].switch()
 
+# Added: ability to repeat key press when held down
+repeat = False
+first_press = True
+last_press_time = 0
+last_key_number = None
+repeat_delay = 1
 
 # MAIN LOOP ----------------------------
 
@@ -126,10 +132,38 @@ while True:
         pressed = encoder_switch
     else:
         event = macropad.keys.events.get()
-        if not event or event.key_number >= len(apps[app_index].macros):
+        if not event and repeat:
+            key_number = last_key_number
+            delay = repeat_delay * 1e9 # In nanoseconds
+
+            if first_press:
+                delay = 0.5 * 1e9 # Half a second in nanoseconds
+
+            # Handle wraparound of ns clock
+            now = time.monotonic_ns()
+            time_passed = 0
+
+            if now >= last_press_time:
+                time_passed = now - last_press_time
+            else:
+                time_passed = abs(now - last_press_time) # I actually don't know if this works
+
+            if time_passed >= (delay):
+                if first_press:
+                    first_press = False
+                    continue
+
+                else:
+                    macropad.keyboard.release_all()
+                    pressed = True
+            else:
+                continue
+        elif not event or event.key_number >= len(apps[app_index].macros):
             continue # No key events, or no corresponding macro, resume loop
-        key_number = event.key_number
-        pressed = event.pressed
+        else:
+            first_press = True
+            key_number = event.key_number
+            pressed = event.pressed
 
     # If code reaches here, a key or the encoder button WAS pressed/released
     # and there IS a corresponding macro available for it...other situations
@@ -181,6 +215,13 @@ while True:
                         macropad.stop_tone()
                 elif 'play' in item:
                     macropad.play_file(item['play'])
+
+                # Added: will repeat the button press after a certain delay
+                elif 'repeat' in item:
+                    repeat = True
+                    last_key_number = key_number
+                    repeat_delay = item['repeat']
+                    last_press_time = time.monotonic_ns()
     else:
         # Release any still-pressed keys, consumer codes, mouse buttons
         # Keys and mouse buttons are individually released this way (rather
@@ -198,6 +239,9 @@ while True:
                 elif 'tone' in item:
                     macropad.stop_tone()
         macropad.consumer_control.release()
+        repeat = False
+        last_key_number = None
+        first_press = True
         if key_number < 12: # No pixel for encoder button
             macropad.pixels[key_number] = apps[app_index].macros[key_number][0]
             macropad.pixels.show()
