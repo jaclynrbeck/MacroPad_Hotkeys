@@ -1,10 +1,12 @@
-# Macropad_Hotkeys
+# MacroPad_Hotkeys
 
 Personal fork of the code from ["Macropad Hotkeys"](https://learn.adafruit.com/macropad-hotkeys/). I've made the following modifications:
 
 - Created my own list of macro hotkeys for a Mac computer (macros/hotkeys.py)
 - Added code to allow repeated firing when a key is held down for more than 0.5 seconds. 
 	- Must be explicitly enabled for each desired key via the command list. 
+- Incorporated sleep mode from [Adafruit-MacroPad-RP2040-Sleep](https://github.com/M-Eldin/Adafruit-MacroPad-RP2040-Sleep)
+	- Screen and key LEDs will automatically shut off after 1 minute of inactivity, and wake when a key is pressed
 
 <br />
 Repeated firing can be added to any macro command by adding 

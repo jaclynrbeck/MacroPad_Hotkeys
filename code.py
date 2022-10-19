@@ -19,6 +19,9 @@ from adafruit_display_shapes.rect import Rect
 from adafruit_display_text import label
 from adafruit_macropad import MacroPad
 
+from autoscreen import AutoOffScreen
+from adafruit_displayio_sh1107_wrapper import SH1107_Wrapper
+
 
 # CONFIGURABLES ------------------------
 
@@ -34,6 +37,13 @@ class App:
     def __init__(self, appdata):
         self.name = appdata['name']
         self.macros = appdata['macros']
+
+    def set_pixels(self):
+        for i in range(12):
+            if i < len(self.macros): # Key in use, set label + LED color
+                macropad.pixels[i] = self.macros[i][0]
+            else:  # Key not in use, no label or LED
+                macropad.pixels[i] = 0
 
     def switch(self):
         """ Activate application settings; update OLED labels and LED
@@ -59,6 +69,12 @@ class App:
 macropad = MacroPad()
 macropad.display.auto_refresh = False
 macropad.pixels.auto_write = False
+
+# Set up timeout
+autoscreen = AutoOffScreen(1 * 60)
+
+# Use a mangled copy of the SH1107 python driver to add sleep ability to display.
+display_sleeper = SH1107_Wrapper(macropad.display)
 
 # Set up displayio group with all the labels
 group = displayio.Group()
@@ -109,12 +125,37 @@ last_press_time = 0
 last_key_number = None
 repeat_delay = 1
 
+macropad.display.brightness = 0
+
+def lights_on():
+    print("lights on!")
+    display_sleeper.wake()
+    # triggers re-setting the neopixels
+    macropad.pixels.brightness = 1
+    apps[app_index].set_pixels()
+
+
+def lights_off():
+    print("lights out")
+    display_sleeper.sleep()
+    macropad.pixels.brightness = 0
+    macropad.pixels[0] = 0x002200
+    macropad.pixels.show()
+
+
+autoscreen.handle_on = lights_on
+autoscreen.handle_off = lights_off
+
+
 # MAIN LOOP ----------------------------
 
 while True:
+    autoscreen.poll()
+
     # Read encoder position. If it's changed, switch apps.
     position = macropad.encoder
     if position != last_position:
+        autoscreen.update_active()
         app_index = position % len(apps)
         apps[app_index].switch()
         last_position = position
@@ -125,6 +166,7 @@ while True:
     macropad.encoder_switch_debounced.update()
     encoder_switch = macropad.encoder_switch_debounced.pressed
     if encoder_switch != last_encoder_switch:
+        autoscreen.update_active()
         last_encoder_switch = encoder_switch
         if len(apps[app_index].macros) < 13:
             continue    # No 13th macro, just resume main loop
@@ -133,6 +175,7 @@ while True:
     else:
         event = macropad.keys.events.get()
         if not event and repeat:
+            autoscreen.update_active()
             key_number = last_key_number
             delay = repeat_delay * 1e9 # In nanoseconds
 
@@ -161,6 +204,7 @@ while True:
         elif not event or event.key_number >= len(apps[app_index].macros):
             continue # No key events, or no corresponding macro, resume loop
         else:
+            autoscreen.update_active()
             first_press = True
             key_number = event.key_number
             pressed = event.pressed
@@ -179,7 +223,7 @@ while True:
         # List []: one or more Consumer Control codes (can also do float delay)
         # Dict {}: mouse buttons/motion (might extend in future)
         if key_number < 12: # No pixel for encoder button
-            macropad.pixels[key_number] = 0xFFFFFF
+            macropad.pixels[key_number] = apps[app_index].macros[key_number][0] * 4 # TODO don't hardcode this
             macropad.pixels.show()
         for item in sequence:
             if isinstance(item, int):
