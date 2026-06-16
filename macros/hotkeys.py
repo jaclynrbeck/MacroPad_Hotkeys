@@ -10,10 +10,10 @@ from adafruit_hid.keycode import Keycode # REQUIRED if using Keycode.* values
 app = {                       # REQUIRED dict, must be named 'app'
     'name' : 'Hotkeys', # Application name
     'macros' : [              # List of button macros...
-        # COLOR    LABEL    KEY SEQUENCE
+        # COLOR    LABEL    KEY SEQUENCE    OTHER PROPERTIES
         # 1st row ----------
-        (0xF00030, 'Undo', [Keycode.COMMAND, 'z', {'repeat': 0.2}]),
-        (0xF00030, 'Redo', [Keycode.COMMAND, 'y', {'repeat': 0.2}]),
+        (0xF00030, 'Undo', [Keycode.COMMAND, 'z'], {'repeat': 0.2}),
+        (0xF00030, 'Redo', [Keycode.COMMAND, 'y'], {'repeat': 0.2}),
         (0x3000F0, 'Cut', [Keycode.COMMAND, 'x']),
         # 2nd row ----------
         (0xF03000, 'Save', [Keycode.COMMAND, 's']),

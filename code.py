@@ -13,14 +13,11 @@ set, press MACROPAD keys to send key sequences and other USB protocols.
 
 import os
 import time
-import displayio
-import terminalio
-from adafruit_display_shapes.rect import Rect
-from adafruit_display_text import label
 from adafruit_macropad import MacroPad
 
 from autoscreen import AutoOffScreen
-from adafruit_displayio_sh1107_wrapper import SH1107_Wrapper
+from pixels import PixelController
+from screen import ScreenController
 
 
 # CONFIGURABLES ------------------------
@@ -30,67 +27,52 @@ MACRO_FOLDER = '/macros'
 
 # CLASSES AND FUNCTIONS ----------------
 
+class Macro:
+    def __init__(self, macro):
+        self.color, self.name, self.sequence = macro[0:3]
+        self.repeat = False
+        self.repeat_delay = 0
+
+        # Backward compatibility -- don't require a 4th entry
+        if len(macro) > 3 and isinstance(macro[3], dict):
+            self.repeat_delay = macro[3].get("repeat", 0)
+            self.repeat = self.repeat_delay > 0
+
 class App:
     """ Class representing a host-side application, for which we have a set
         of macro sequences. Project code was originally more complex and
         this was helpful, but maybe it's excessive now?"""
     def __init__(self, appdata):
         self.name = appdata['name']
-        self.macros = appdata['macros']
+        self.macros = [Macro(x) for x in appdata['macros']]
 
-    def set_pixels(self):
-        for i in range(12):
-            if i < len(self.macros): # Key in use, set label + LED color
-                macropad.pixels[i] = self.macros[i][0]
-            else:  # Key not in use, no label or LED
-                macropad.pixels[i] = 0
+    def __len__(self):
+        return len(self.macros)
 
-    def switch(self):
+    def activate(self):
         """ Activate application settings; update OLED labels and LED
             colors. """
-        group[13].text = self.name   # Application name
-        for i in range(12):
-            if i < len(self.macros): # Key in use, set label + LED color
-                macropad.pixels[i] = self.macros[i][0]
-                group[i].text = self.macros[i][1]
-            else:  # Key not in use, no label or LED
-                macropad.pixels[i] = 0
-                group[i].text = ''
+        screen.setTitle(self.name)
+        screen.register(self.macros)
+        pixels.register(self.macros)
+
         macropad.keyboard.release_all()
         macropad.consumer_control.release()
         macropad.mouse.release_all()
         macropad.stop_tone()
-        macropad.pixels.show()
-        macropad.display.refresh()
 
 
 # INITIALIZATION -----------------------
 
 macropad = MacroPad()
-macropad.display.auto_refresh = False
-macropad.pixels.auto_write = False
+pixels = PixelController(macropad)
+screen = ScreenController(macropad)
 
 # Set up timeout
-autoscreen = AutoOffScreen(1 * 60)
+autoscreen = AutoOffScreen(30)
 
-# Use a mangled copy of the SH1107 python driver to add sleep ability to display.
-display_sleeper = SH1107_Wrapper(macropad.display)
-
-# Set up displayio group with all the labels
-group = displayio.Group()
-for key_index in range(12):
-    x = key_index % 3
-    y = key_index // 3
-    group.append(label.Label(terminalio.FONT, text='', color=0xFFFFFF,
-                             anchored_position=((macropad.display.width - 1) * x / 2,
-                                                macropad.display.height - 1 -
-                                                (3 - y) * 12),
-                             anchor_point=(x / 2, 1.0)))
-group.append(Rect(0, 0, macropad.display.width, 12, fill=0xFFFFFF))
-group.append(label.Label(terminalio.FONT, text='', color=0x000000,
-                         anchored_position=(macropad.display.width//2, -2),
-                         anchor_point=(0.5, 0.0)))
-macropad.display.show(group)
+# Set up the screen display
+screen.initialize()
 
 # Load all the macro key setups from .py files in MACRO_FOLDER
 apps = []
@@ -101,191 +83,169 @@ for filename in files:
         try:
             module = __import__(MACRO_FOLDER + '/' + filename[:-3])
             apps.append(App(module.app))
-        except (SyntaxError, ImportError, AttributeError, KeyError, NameError,
-                IndexError, TypeError) as err:
+        except Exception as err:
             print("ERROR in", filename)
             import traceback
             traceback.print_exception(err, err, err.__traceback__)
 
 if not apps:
-    group[13].text = 'NO MACRO FILES FOUND'
-    macropad.display.refresh()
+    screen.setTitle('NO MACRO FILES FOUND')
     while True:
-        pass
+        time.sleep(60.0)
 
 last_position = None
-last_encoder_switch = macropad.encoder_switch_debounced.pressed
 app_index = 0
-apps[app_index].switch()
+apps[app_index].activate()
 
 # Added: ability to repeat key press when held down
-repeat = False
-first_press = True
+repeating = False
 last_press_time = 0
 last_key_number = None
 repeat_delay = 1
 
-macropad.display.brightness = 0
-
 def lights_on():
-    print("lights on!")
-    display_sleeper.wake()
-    # triggers re-setting the neopixels
-    macropad.pixels.brightness = 1
-    apps[app_index].set_pixels()
-
+    screen.wake()
+    pixels.wake()
 
 def lights_off():
-    print("lights out")
-    display_sleeper.sleep()
-    macropad.pixels.brightness = 0
-    macropad.pixels[0] = 0x002200
-    macropad.pixels.show()
-
+    screen.sleep()
+    pixels.sleep()
 
 autoscreen.handle_on = lights_on
 autoscreen.handle_off = lights_off
 
+def key_press(key_number):
+    global repeating, last_key_number, repeat_delay, last_press_time
+
+    current_macro = apps[app_index].macros[key_number]
+    sequence = current_macro.sequence
+
+    # 'sequence' is an arbitrary-length list, each item is one of:
+    # Positive integer (e.g. Keycode.KEYPAD_MINUS): key pressed
+    # Negative integer: (absolute value) key released
+    # Float (e.g. 0.25): delay in seconds
+    # String (e.g. "Foo"): corresponding keys pressed & released
+    # List []: one or more Consumer Control codes (can also do float delay)
+    # Dict {}: mouse buttons/motion (might extend in future)
+    pixels.pressed(key_number)
+    screen.pressed(key_number)
+
+    if current_macro.repeat:
+        repeating = True
+        last_key_number = key_number
+        repeat_delay = current_macro.repeat_delay
+        last_press_time = time.monotonic_ns()
+
+    for item in sequence:
+        if isinstance(item, int):
+            if item >= 0:
+                macropad.keyboard.press(item)
+            else:
+                macropad.keyboard.release(-item)
+        elif isinstance(item, float):
+            time.sleep(item)
+        elif isinstance(item, str):
+            macropad.keyboard_layout.write(item)
+        elif isinstance(item, list):
+            for code in item:
+                if isinstance(code, int):
+                    macropad.consumer_control.release()
+                    macropad.consumer_control.press(code)
+                if isinstance(code, float):
+                    time.sleep(code)
+        elif isinstance(item, dict):
+            if 'buttons' in item:
+                if item['buttons'] >= 0:
+                    macropad.mouse.press(item['buttons'])
+                else:
+                    macropad.mouse.release(-item['buttons'])
+            macropad.mouse.move(item['x'] if 'x' in item else 0,
+                                item['y'] if 'y' in item else 0,
+                                item['wheel'] if 'wheel' in item else 0)
+            if 'tone' in item:
+                if item['tone'] > 0:
+                    macropad.stop_tone()
+                    macropad.start_tone(item['tone'])
+                else:
+                    macropad.stop_tone()
+            elif 'play' in item:
+                macropad.play_file(item['play'])
+
+def key_release(key_number):
+    global repeating, last_key_number
+
+    current_macro = apps[app_index].macros[key_number]
+    sequence = current_macro.sequence
+
+    # Release any still-pressed keys, consumer codes, mouse buttons
+    # Keys and mouse buttons are individually released this way (rather
+    # than release_all()) because pad supports multi-key rollover, e.g.
+    # could have a meta key or right-mouse held down by one macro and
+    # press/release keys/buttons with others. Navigate popups, etc.
+    for item in sequence:
+        if isinstance(item, int):
+            if item >= 0:
+                macropad.keyboard.release(item)
+        elif isinstance(item, dict):
+            if 'buttons' in item:
+                if item['buttons'] >= 0:
+                    macropad.mouse.release(item['buttons'])
+            elif 'tone' in item:
+                macropad.stop_tone()
+    macropad.consumer_control.release()
+    repeating = False
+    last_key_number = None
+
+    pixels.released(key_number)
+    screen.released(key_number)
 
 # MAIN LOOP ----------------------------
 
 while True:
     autoscreen.poll()
 
-    # Read encoder position. If it's changed, switch apps.
-    position = macropad.encoder
-    if position != last_position:
+    macropad.encoder_switch_debounced.update()
+    event = macropad.keys.events.get()
+
+    # Refresh sleep timer for any activity
+    if (
+        event or repeating or macropad.encoder != last_position or
+        macropad.encoder_switch_debounced.pressed or
+        macropad.encoder_switch_debounced.released
+    ):
         autoscreen.update_active()
-        app_index = position % len(apps)
-        apps[app_index].switch()
-        last_position = position
+
+    # Read encoder position. If it's changed, switch apps.
+    if macropad.encoder != last_position:
+        last_position = macropad.encoder
+        app_index = last_position % len(apps)
+        apps[app_index].activate()
 
     # Handle encoder button. If state has changed, and if there's a
     # corresponding macro, set up variables to act on this just like
     # the keypad keys, as if it were a 13th key/macro.
-    macropad.encoder_switch_debounced.update()
-    encoder_switch = macropad.encoder_switch_debounced.pressed
-    if encoder_switch != last_encoder_switch:
-        autoscreen.update_active()
-        last_encoder_switch = encoder_switch
-        if len(apps[app_index].macros) < 13:
-            continue    # No 13th macro, just resume main loop
-        key_number = 12 # else process below as 13th macro
-        pressed = encoder_switch
-    else:
-        event = macropad.keys.events.get()
-        if not event and repeat:
-            autoscreen.update_active()
-            key_number = last_key_number
-            delay = repeat_delay * 1e9 # In nanoseconds
+    elif macropad.encoder_switch_debounced.pressed:
+        key_press(key_number=12)
 
-            if first_press:
-                delay = 0.5 * 1e9 # Half a second in nanoseconds
+    elif macropad.encoder_switch_debounced.released:
+        key_release(key_number=12)
 
-            # Handle wraparound of ns clock
-            now = time.monotonic_ns()
-            time_passed = 0
+    # Key event
+    elif event and event.pressed:
+        key_press(event.key_number)
 
-            if now >= last_press_time:
-                time_passed = now - last_press_time
-            else:
-                time_passed = abs(now - last_press_time) # I actually don't know if this works
+    elif event and event.released:
+        key_release(event.key_number)
 
-            if time_passed >= (delay):
-                if first_press:
-                    first_press = False
-                    continue
+    # No new key presses but a key is still held down and is allowed to
+    # repeat key strokes
+    elif repeating:
+        delay = repeat_delay * 1e9  # In nanoseconds
 
-                else:
-                    macropad.keyboard.release_all()
-                    pressed = True
-            else:
-                continue
-        elif not event or event.key_number >= len(apps[app_index].macros):
-            continue # No key events, or no corresponding macro, resume loop
-        else:
-            autoscreen.update_active()
-            first_press = True
-            key_number = event.key_number
-            pressed = event.pressed
+        # Handle wraparound of ns clock with abs()
+        now = time.monotonic_ns()
+        time_passed = abs(now - last_press_time)
 
-    # If code reaches here, a key or the encoder button WAS pressed/released
-    # and there IS a corresponding macro available for it...other situations
-    # are avoided by 'continue' statements above which resume the loop.
-
-    sequence = apps[app_index].macros[key_number][2]
-    if pressed:
-        # 'sequence' is an arbitrary-length list, each item is one of:
-        # Positive integer (e.g. Keycode.KEYPAD_MINUS): key pressed
-        # Negative integer: (absolute value) key released
-        # Float (e.g. 0.25): delay in seconds
-        # String (e.g. "Foo"): corresponding keys pressed & released
-        # List []: one or more Consumer Control codes (can also do float delay)
-        # Dict {}: mouse buttons/motion (might extend in future)
-        if key_number < 12: # No pixel for encoder button
-            macropad.pixels[key_number] = apps[app_index].macros[key_number][0] * 4 # TODO don't hardcode this
-            macropad.pixels.show()
-        for item in sequence:
-            if isinstance(item, int):
-                if item >= 0:
-                    macropad.keyboard.press(item)
-                else:
-                    macropad.keyboard.release(-item)
-            elif isinstance(item, float):
-                time.sleep(item)
-            elif isinstance(item, str):
-                macropad.keyboard_layout.write(item)
-            elif isinstance(item, list):
-                for code in item:
-                    if isinstance(code, int):
-                        macropad.consumer_control.release()
-                        macropad.consumer_control.press(code)
-                    if isinstance(code, float):
-                        time.sleep(code)
-            elif isinstance(item, dict):
-                if 'buttons' in item:
-                    if item['buttons'] >= 0:
-                        macropad.mouse.press(item['buttons'])
-                    else:
-                        macropad.mouse.release(-item['buttons'])
-                macropad.mouse.move(item['x'] if 'x' in item else 0,
-                                    item['y'] if 'y' in item else 0,
-                                    item['wheel'] if 'wheel' in item else 0)
-                if 'tone' in item:
-                    if item['tone'] > 0:
-                        macropad.stop_tone()
-                        macropad.start_tone(item['tone'])
-                    else:
-                        macropad.stop_tone()
-                elif 'play' in item:
-                    macropad.play_file(item['play'])
-
-                # Added: will repeat the button press after a certain delay
-                elif 'repeat' in item:
-                    repeat = True
-                    last_key_number = key_number
-                    repeat_delay = item['repeat']
-                    last_press_time = time.monotonic_ns()
-    else:
-        # Release any still-pressed keys, consumer codes, mouse buttons
-        # Keys and mouse buttons are individually released this way (rather
-        # than release_all()) because pad supports multi-key rollover, e.g.
-        # could have a meta key or right-mouse held down by one macro and
-        # press/release keys/buttons with others. Navigate popups, etc.
-        for item in sequence:
-            if isinstance(item, int):
-                if item >= 0:
-                    macropad.keyboard.release(item)
-            elif isinstance(item, dict):
-                if 'buttons' in item:
-                    if item['buttons'] >= 0:
-                        macropad.mouse.release(item['buttons'])
-                elif 'tone' in item:
-                    macropad.stop_tone()
-        macropad.consumer_control.release()
-        repeat = False
-        last_key_number = None
-        first_press = True
-        if key_number < 12: # No pixel for encoder button
-            macropad.pixels[key_number] = apps[app_index].macros[key_number][0]
-            macropad.pixels.show()
+        if time_passed >= delay:
+            macropad.keyboard.release_all()
+            key_press(last_key_number)
